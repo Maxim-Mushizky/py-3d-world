@@ -72,7 +72,12 @@ def main():
                     print(f"Debug mode: {'ON' if debug else 'OFF'}")
                 elif event.key == pygame.K_l:
                     # Toggle light visualization
-                    print("Light visualization toggled")
+                    show_lights = renderer.toggle_light_visualization()
+                    print(f"Light visualization: {'ON' if show_lights else 'OFF'}")
+                elif event.key == pygame.K_s:
+                    # Toggle shadows
+                    shadows_on = renderer.toggle_shadows()
+                    print(f"Shadows: {'ON' if shadows_on else 'OFF'}")
         
         # Update camera (handles input and movement)
         camera.update()
