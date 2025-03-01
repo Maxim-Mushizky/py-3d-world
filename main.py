@@ -6,7 +6,7 @@ import numpy as np
 import sys
 from engine.renderer import Renderer
 from engine.camera import Camera
-from engine.shapes import Rectangle
+from engine.shapes import Rectangle, InteractiveCube, Triangle, InteractiveTriangle
 from engine.world import World
 from engine.collision import CollisionDetector
 from engine.physics import PhysicsEngine
@@ -16,7 +16,7 @@ def main():
     pygame.init()
     display = (1200, 800)
     pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
-    pygame.display.set_caption("3D Game Engine")
+    pygame.display.set_caption("3D Game Engine with Enhanced Lighting")
     
     # Set up OpenGL
     glMatrixMode(GL_PROJECTION)
@@ -33,6 +33,12 @@ def main():
     world = World()
     collision_detector = CollisionDetector(world)
     physics_engine = PhysicsEngine(collision_detector)
+    
+    # Set up interactive objects in the physics engine
+    interactive_objects = world.get_interactive_objects()
+    physics_engine.set_interactive_objects(interactive_objects)
+    print(f"Initialized {len(interactive_objects)} interactive objects")
+    
     camera = Camera(physics_engine)
     renderer = Renderer(world)
     
@@ -50,6 +56,9 @@ def main():
     
     # Main game loop
     while running:
+        # Calculate delta time for smooth animations
+        dt = clock.get_time() / 1000.0  # Convert milliseconds to seconds
+        
         # Handle events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -61,9 +70,15 @@ def main():
                     # Toggle debug mode
                     debug = not debug
                     print(f"Debug mode: {'ON' if debug else 'OFF'}")
+                elif event.key == pygame.K_l:
+                    # Toggle light visualization
+                    print("Light visualization toggled")
         
         # Update camera (handles input and movement)
         camera.update()
+        
+        # Update renderer (for animated lighting)
+        renderer.update(dt)
         
         # Debug output
         current_time = pygame.time.get_ticks() / 1000

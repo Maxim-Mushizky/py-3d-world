@@ -1,5 +1,5 @@
 import numpy as np
-from engine.shapes import Cube, Plane, Rectangle
+from engine.shapes import Cube, Plane, Rectangle, Triangle, InteractiveTriangle, InteractiveCube
 import time
 
 class CollisionDetector:
@@ -36,7 +36,7 @@ class CollisionDetector:
         adjusted_position = np.copy(new_position)
         
         for obj in self.world.get_objects():
-            if isinstance(obj, Cube) or isinstance(obj, Rectangle):
+            if isinstance(obj, (Cube, Rectangle, InteractiveCube)):
                 if self._check_object_collision(obj, position, adjusted_position):
                     # Collision detected, adjust position
                     adjusted_position = self._resolve_object_collision(obj, position, adjusted_position)
@@ -55,6 +55,22 @@ class CollisionDetector:
                         if self.debug and time.time() - self.last_debug_time > 1.0:
                             self.last_debug_time = time.time()
                             print(f"Standing on object at position {adjusted_position}, object height: {self._standing_height}")
+            elif isinstance(obj, (Triangle, InteractiveTriangle)):
+                if self._check_triangle_collision(obj, position, adjusted_position):
+                    # Collision detected, adjust position
+                    adjusted_position = self._resolve_triangle_collision(obj, position, adjusted_position)
+                    
+                    # If we adjusted the Y position upward, we might be standing on this object
+                    if adjusted_position[1] > new_position[1]:
+                        self._standing_on_object = obj
+                        self._on_ground_last_check = True
+                        
+                        # Store the height of the object we're standing on
+                        self._standing_height = obj.position[1] + obj.height
+                        
+                        if self.debug and time.time() - self.last_debug_time > 1.0:
+                            self.last_debug_time = time.time()
+                            print(f"Standing on triangle at position {adjusted_position}, object height: {self._standing_height}")
             elif isinstance(obj, Plane):
                 # For planes, we only check if we're trying to go below the ground
                 if obj.position[1] == 0 and adjusted_position[1] < self.player_height:
@@ -101,7 +117,7 @@ class CollisionDetector:
     
     def _check_object_collision(self, obj, position, new_position):
         """Check if player would collide with an object when moving from position to new_position."""
-        if isinstance(obj, Cube):
+        if isinstance(obj, (Cube, InteractiveCube)):
             return self._check_cube_collision(obj, position, new_position)
         elif isinstance(obj, Rectangle):
             return self._check_rectangle_collision(obj, position, new_position)
@@ -429,4 +445,133 @@ class CollisionDetector:
                 if abs(player_feet - top_height) < self.ground_collision_threshold * 4:
                     return True
         
-        return False 
+        return False
+    
+    def _check_triangle_collision(self, triangle, position, new_position):
+        """Check if player would collide with a triangle when moving from position to new_position."""
+        # Get triangle dimensions
+        base_half_size = triangle.size / 2
+        
+        # Triangle boundaries (min and max points)
+        # For simplicity, we'll use a bounding box for initial collision detection
+        triangle_min = np.array([
+            triangle.position[0] - base_half_size,
+            triangle.position[1],  # Bottom of triangle
+            triangle.position[2] - base_half_size
+        ])
+        
+        triangle_max = np.array([
+            triangle.position[0] + base_half_size,
+            triangle.position[1] + triangle.height,  # Top of triangle
+            triangle.position[2] + base_half_size
+        ])
+        
+        # Expand triangle by player radius for collision detection
+        triangle_min[0] -= self.player_radius
+        triangle_min[2] -= self.player_radius
+        triangle_max[0] += self.player_radius
+        triangle_max[2] += self.player_radius
+        
+        # Check if new position would be inside the expanded bounding box
+        # We only check X and Z for horizontal movement
+        horizontal_collision = (
+            new_position[0] >= triangle_min[0] and new_position[0] <= triangle_max[0] and
+            new_position[2] >= triangle_min[2] and new_position[2] <= triangle_max[2]
+        )
+        
+        # Check vertical collision only if we're within the horizontal bounds
+        vertical_collision = False
+        if horizontal_collision:
+            player_feet = new_position[1] - self.player_height
+            player_head = new_position[1]
+            
+            # Check if player's feet or head would be inside the triangle's height range
+            vertical_collision = (
+                (player_feet <= triangle_max[1] and player_feet >= triangle_min[1]) or
+                (player_head <= triangle_max[1] and player_head >= triangle_min[1]) or
+                (player_feet <= triangle_min[1] and player_head >= triangle_max[1])
+            )
+            
+            # If we're within the bounding box, we need to do a more precise check
+            # for the triangular shape, but only if we're not clearly above the triangle
+            if vertical_collision:
+                # For simplicity, we'll just check if we're above the apex of the triangle
+                # If we're above the apex, we're definitely not colliding
+                if player_feet > triangle.position[1] + triangle.height:
+                    vertical_collision = False
+            
+            # Check if we're landing on top of the triangle
+            if not vertical_collision and player_feet <= triangle_max[1] + 0.1 and player_feet >= triangle_max[1] - 0.1:
+                # We're very close to the top of the triangle, consider it a landing
+                if self.debug and time.time() - self.last_debug_time > 1.0:
+                    self.last_debug_time = time.time()
+                    print(f"Landing on triangle! Player feet: {player_feet}, Triangle top: {triangle_max[1]}")
+                vertical_collision = True
+        
+        return horizontal_collision and vertical_collision
+    
+    def _resolve_triangle_collision(self, triangle, position, new_position):
+        """Resolve collision with a triangle by adjusting the new position."""
+        # If we're already colliding at the current position, allow some movement
+        if self._check_triangle_collision(triangle, position, position):
+            # Calculate direction away from triangle center
+            direction = position - np.array(triangle.position)
+            direction[1] = 0  # Only consider horizontal direction
+            
+            if np.linalg.norm(direction) > 0:
+                direction = direction / np.linalg.norm(direction)
+                
+                # Move slightly away from triangle
+                return position + direction * 0.1
+            else:
+                # If we're exactly at the center, move in any direction
+                return position + np.array([0.1, 0, 0])
+        
+        # Get triangle dimensions
+        base_half_size = triangle.size / 2
+        
+        # Triangle boundaries (min and max points)
+        triangle_min = np.array([
+            triangle.position[0] - base_half_size,
+            triangle.position[1],  # Bottom of triangle
+            triangle.position[2] - base_half_size
+        ])
+        
+        triangle_max = np.array([
+            triangle.position[0] + base_half_size,
+            triangle.position[1] + triangle.height,  # Top of triangle
+            triangle.position[2] + base_half_size
+        ])
+        
+        # Calculate player dimensions
+        player_feet = new_position[1] - self.player_height
+        player_head = new_position[1]
+        
+        # Adjusted position starts as the new position
+        adjusted_position = np.copy(new_position)
+        
+        # Check if we're colliding with the top of the triangle
+        if (player_feet <= triangle_max[1] + 0.1 and player_feet >= triangle_max[1] - 0.1 and
+            adjusted_position[0] >= triangle_min[0] and adjusted_position[0] <= triangle_max[0] and
+            adjusted_position[2] >= triangle_min[2] and adjusted_position[2] <= triangle_max[2]):
+            # We're landing on top of the triangle, adjust height
+            adjusted_position[1] = triangle_max[1] + self.player_height
+            return adjusted_position
+        
+        # Check if we're colliding with the sides of the triangle
+        # For simplicity, we'll just push the player out horizontally
+        if (player_feet <= triangle_max[1] and player_head >= triangle_min[1] and
+            adjusted_position[0] >= triangle_min[0] and adjusted_position[0] <= triangle_max[0] and
+            adjusted_position[2] >= triangle_min[2] and adjusted_position[2] <= triangle_max[2]):
+            
+            # Calculate direction from triangle center to player (horizontal only)
+            direction = np.array([adjusted_position[0] - triangle.position[0], 0, adjusted_position[2] - triangle.position[2]])
+            
+            if np.linalg.norm(direction) > 0:
+                direction = direction / np.linalg.norm(direction)
+                
+                # Push player out horizontally
+                adjusted_position[0] = triangle.position[0] + direction[0] * (base_half_size + self.player_radius + 0.1)
+                adjusted_position[2] = triangle.position[2] + direction[2] * (base_half_size + self.player_radius + 0.1)
+            
+        return adjusted_position 
