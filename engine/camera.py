@@ -117,7 +117,7 @@ class Camera:
         self.pitch = max(-self.pitch_limit, min(self.pitch_limit, self.pitch))
     
     def _update_target(self):
-        """Update the target position based on current orientation angles."""
+        """Update the target point based on camera position and orientation."""
         # Calculate direction vector from yaw and pitch
         direction = np.array([
             math.cos(math.radians(self.yaw)) * math.cos(math.radians(self.pitch)),
@@ -125,10 +125,7 @@ class Camera:
             math.sin(math.radians(self.yaw)) * math.cos(math.radians(self.pitch))
         ])
         
-        # Normalize the direction vector
-        direction = direction / np.linalg.norm(direction)
-        
-        # Set target position
+        # Set target to position + direction
         self.target = self.position + direction
     
     def _handle_crouch(self, crouch_key):
@@ -205,4 +202,15 @@ class Camera:
             self.position[0], self.position[1], self.position[2],
             self.target[0], self.target[1], self.target[2],
             self.up[0], self.up[1], self.up[2]
-        ) 
+        )
+    
+    def get_direction(self):
+        """Return the normalized direction vector that the camera is facing."""
+        direction = self.target - self.position
+        
+        # Normalize the direction vector
+        norm = np.linalg.norm(direction)
+        if norm > 0:
+            direction = direction / norm
+            
+        return direction 

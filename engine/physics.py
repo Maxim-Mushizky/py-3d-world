@@ -1,10 +1,13 @@
 import numpy as np
+import math
 import time
-from engine.shapes import InteractiveCube, InteractiveTriangle
+from engine.shapes import InteractiveCube, InteractiveTriangle, InteractiveSphere, Plane, Cube, Rectangle
 
 class PhysicsEngine:
     def __init__(self, collision_detector):
         self.collision_detector = collision_detector
+        # Store a reference to the world from the collision detector
+        self.world = self.collision_detector.world
         
         # Physics parameters
         self.gravity = 9.8  # m/s²
@@ -57,6 +60,11 @@ class PhysicsEngine:
         self.player_push_strength = 500.0  # Force applied when pushing objects
         self.interactive_objects = []  # List of interactive objects in the world
     
+    @property
+    def time_since_jump(self):
+        """Calculate and return the time since the last jump."""
+        return time.time() - self.last_jump_time
+    
     def update(self, position, movement_dir, jump_requested):
         """Update physics and return the new position."""
         current_time = time.time()
@@ -93,7 +101,7 @@ class PhysicsEngine:
             self.jumping = False
             self.on_ground = True
             self.velocity[1] = 0
-            self.jump_cooldown = 0.0
+            self.jump_cooldown = 0.0  # Reset jump cooldown to allow jumping again
         
         # CRITICAL FIX: If we're at ground level and have been jumping for a while, land
         if self.jumping and abs(position[1] - self.default_eye_height) < 0.1 and time_since_jump > 0.5:
@@ -102,7 +110,7 @@ class PhysicsEngine:
             self.jumping = False
             self.on_ground = True
             self.velocity[1] = 0
-            self.jump_cooldown = 0.0
+            self.jump_cooldown = 0.0  # Reset jump cooldown to allow jumping again
             self.just_landed = True
             self.landing_position = np.copy(position)
         
@@ -141,7 +149,7 @@ class PhysicsEngine:
         if not was_on_ground and self.on_ground and was_jumping:
             if time_since_jump > 0.5 and self.velocity[1] <= 0:
                 self.jumping = False
-                self.jump_cooldown = 0.0
+                self.jump_cooldown = 0.0  # Reset jump cooldown to allow jumping again
                 self.just_landed = True
                 self.landing_position = np.copy(position)
                 
@@ -272,7 +280,7 @@ class PhysicsEngine:
             self.jumping = False
             self.on_ground = True
             self.velocity[1] = 0
-            self.jump_cooldown = 0.0
+            self.jump_cooldown = 0.0  # Reset jump cooldown to allow jumping again
             
             if self.debug:
                 print(f"DEBUG: Forced landing at ground level after {time_since_jump:.2f}s in air")
@@ -284,196 +292,440 @@ class PhysicsEngine:
                 print(f"Camera position during jump: {adjusted_position}, Physics jumping: {self.jumping}")
         
         # Update all interactive objects
-        self.update_interactive_objects(dt)
+        self.update_interactive_objects(dt, position, movement_dir)
         
         return adjusted_position
     
     def set_interactive_objects(self, objects):
         """Set the list of interactive objects to track"""
-        self.interactive_objects = [obj for obj in objects if isinstance(obj, (InteractiveCube, InteractiveTriangle))]
+        self.interactive_objects = [obj for obj in objects if isinstance(obj, (InteractiveCube, InteractiveTriangle, InteractiveSphere))]
         if self.debug:
             print(f"DEBUG: Tracking {len(self.interactive_objects)} interactive objects")
     
     def handle_interactive_object_collisions(self, position, new_position, movement_dir, dt):
-        """Handle collisions with interactive objects and apply forces"""
-        # Only process if we have interactive objects and are moving
-        if not self.interactive_objects or np.array_equal(position, new_position):
+        """Handle collisions with interactive objects and apply forces."""
+        # Skip if no interactive objects
+        if not self.interactive_objects:
             return
         
-        # Calculate movement direction and speed
+        # Calculate movement vector
         movement_vector = new_position - position
-        movement_speed = np.linalg.norm(movement_vector)
         
-        if movement_speed > 0:
-            normalized_dir = movement_vector / movement_speed
-        else:
-            normalized_dir = np.array([0.0, 0.0, 0.0])
+        # Skip if not moving
+        if np.linalg.norm(movement_vector) < 0.001:
+            return
         
-        # Check each interactive object for collision
+        # Normalize movement vector
+        if np.linalg.norm(movement_vector) > 0:
+            movement_vector = movement_vector / np.linalg.norm(movement_vector)
+        
+        # Check each interactive object
         for obj in self.interactive_objects:
-            if not obj.is_movable:
-                continue
-                
-            # Calculate distance from player to object center
+            # Calculate distance to object
             obj_pos = np.array(obj.position)
-            distance_vector = obj_pos - position
+            distance_vector = obj_pos - new_position
             
-            # Only consider horizontal distance for pushing
+            # Only consider horizontal distance for collision
             distance_vector[1] = 0
             distance = np.linalg.norm(distance_vector)
             
-            # Check if we're close enough to interact (player radius + object size)
-            player_radius = self.collision_detector.player_radius
-            obj_radius = self._get_object_radius(obj)
-            interaction_distance = player_radius + obj_radius + 0.1  # Small buffer
+            # Check if we're close enough to interact
+            interaction_radius = 2.0  # Distance at which player can push objects
             
-            if distance <= interaction_distance:
-                # We're colliding with this object
-                if self.debug and time.time() - self.last_debug_time > 0.5:
-                    print(f"DEBUG: Colliding with interactive object at {obj_pos}")
-                
+            if distance < interaction_radius:
                 # Calculate push direction (from player to object)
                 if np.linalg.norm(distance_vector) > 0:
                     push_dir = distance_vector / np.linalg.norm(distance_vector)
                 else:
-                    # If we're exactly at the center, use movement direction
-                    push_dir = normalized_dir if np.linalg.norm(normalized_dir) > 0 else np.array([1.0, 0.0, 0.0])
+                    push_dir = np.array([1.0, 0.0, 0.0])  # Default direction if directly on top
                 
-                # Calculate push force based on player's movement speed and direction
-                # Only apply force in the direction of player movement
-                movement_alignment = np.dot(normalized_dir, push_dir)
+                # Calculate dot product to see if we're moving toward the object
+                dot_product = np.dot(movement_vector, push_dir)
                 
-                # If we're moving toward the object, apply force
-                if movement_alignment > 0:
-                    # Calculate force magnitude based on player mass, speed, and alignment
-                    force_magnitude = self.player_push_strength * movement_speed * movement_alignment
+                # Only push if moving toward the object
+                if dot_product > 0.3:  # Threshold to determine if we're moving toward the object
+                    # Calculate push force based on movement speed and player strength
+                    push_strength = self.player_push_strength * dot_product
                     
-                    # Create force vector (only horizontal components)
-                    force = push_dir * force_magnitude
-                    force[1] = 0  # No vertical force from pushing
+                    # Scale force based on mass ratio (heavier objects are harder to push)
+                    mass_factor = min(1.0, self.player_mass / obj.mass)
+                    push_strength *= mass_factor
+                    
+                    # Apply force to object
+                    force = push_dir * push_strength
+                    
+                    # Only apply horizontal force (no vertical pushing)
+                    force[1] = 0
                     
                     # Apply the force to the object
                     obj.apply_force(force)
                     
-                    if self.debug and time.time() - self.last_debug_time > 0.5:
-                        print(f"DEBUG: Applied force {force} to object, speed: {movement_speed:.2f}, alignment: {movement_alignment:.2f}")
+                    # Debug output
+                    if self.debug and np.linalg.norm(force) > 100:
+                        print(f"DEBUG: Applied force {np.linalg.norm(force):.1f} to object at {obj.position}")
+                    
+                    # Update the object's physics
+                    obj.update(dt)
+                    
+                    # Check for collisions between this object and other objects
+                    self._handle_object_object_collisions(obj, dt)
     
-    def update_interactive_objects(self, dt):
-        """Update all interactive objects"""
+    def _handle_object_object_collisions(self, obj, dt):
+        """Handle collisions between interactive objects."""
+        # Skip if no interactive objects
+        if not self.interactive_objects:
+            return
+        
+        # Get object position and size
+        obj_pos = np.array(obj.position)
+        
+        # For cubes, use width/height/depth
+        if isinstance(obj, InteractiveCube):
+            obj_size = np.array([obj.width, obj.height, obj.depth])
+        # For triangles, use size as an approximation
+        elif isinstance(obj, InteractiveTriangle):
+            obj_size = np.array([obj.size, obj.height, obj.size])
+        else:
+            return  # Unsupported object type
+        
+        # Check collision with each other interactive object
+        for other_obj in self.interactive_objects:
+            # Skip self
+            if other_obj is obj:
+                continue
+            
+            # Get other object position and size
+            other_pos = np.array(other_obj.position)
+            
+            # For cubes, use width/height/depth
+            if isinstance(other_obj, InteractiveCube):
+                other_size = np.array([other_obj.width, other_obj.height, other_obj.depth])
+            # For triangles, use size as an approximation
+            elif isinstance(other_obj, InteractiveTriangle):
+                other_size = np.array([other_obj.size, other_obj.height, other_obj.size])
+            else:
+                continue  # Unsupported object type
+            
+            # Calculate distance between objects
+            distance_vector = other_pos - obj_pos
+            
+            # Calculate collision bounds (half sizes)
+            obj_half_size = obj_size / 2
+            other_half_size = other_size / 2
+            
+            # Check for collision in each dimension
+            collision_x = abs(distance_vector[0]) < (obj_half_size[0] + other_half_size[0])
+            collision_y = abs(distance_vector[1]) < (obj_half_size[1] + other_half_size[1])
+            collision_z = abs(distance_vector[2]) < (obj_half_size[2] + other_half_size[2])
+            
+            # If collision in all dimensions, objects are colliding
+            if collision_x and collision_y and collision_z:
+                # Calculate collision normal (direction from obj to other_obj)
+                if np.linalg.norm(distance_vector) > 0:
+                    collision_normal = distance_vector / np.linalg.norm(distance_vector)
+                else:
+                    collision_normal = np.array([1.0, 0.0, 0.0])  # Default if objects are at same position
+                
+                # Calculate overlap in each dimension
+                overlap_x = (obj_half_size[0] + other_half_size[0]) - abs(distance_vector[0])
+                overlap_y = (obj_half_size[1] + other_half_size[1]) - abs(distance_vector[1])
+                overlap_z = (obj_half_size[2] + other_half_size[2]) - abs(distance_vector[2])
+                
+                # Find minimum overlap dimension
+                min_overlap = min(overlap_x, overlap_y, overlap_z)
+                
+                # Resolve collision by moving objects apart
+                if min_overlap == overlap_x:
+                    # X-axis collision
+                    separation_vector = np.array([collision_normal[0] * overlap_x, 0, 0])
+                elif min_overlap == overlap_y:
+                    # Y-axis collision
+                    separation_vector = np.array([0, collision_normal[1] * overlap_y, 0])
+                else:
+                    # Z-axis collision
+                    separation_vector = np.array([0, 0, collision_normal[2] * overlap_z])
+                
+                # Calculate mass ratio for collision response
+                total_mass = obj.mass + other_obj.mass
+                obj_mass_ratio = other_obj.mass / total_mass
+                other_mass_ratio = obj.mass / total_mass
+                
+                # Move objects apart based on mass ratio
+                if obj.is_movable:
+                    obj.position -= separation_vector * obj_mass_ratio
+                    obj.update_vertices()
+                
+                if other_obj.is_movable:
+                    other_obj.position += separation_vector * other_mass_ratio
+                    other_obj.update_vertices()
+                
+                # Calculate impulse for collision response
+                relative_velocity = other_obj.velocity - obj.velocity
+                velocity_along_normal = np.dot(relative_velocity, collision_normal)
+                
+                # Only resolve if objects are moving toward each other
+                if velocity_along_normal < 0:
+                    # Calculate restitution (bounciness)
+                    restitution = 0.3  # Medium bounce
+                    
+                    # Calculate impulse scalar
+                    impulse_scalar = -(1 + restitution) * velocity_along_normal
+                    impulse_scalar /= (1 / obj.mass) + (1 / other_obj.mass)
+                    
+                    # Apply impulse
+                    impulse = collision_normal * impulse_scalar
+                    
+                    if obj.is_movable:
+                        obj.velocity -= impulse / obj.mass
+                    
+                    if other_obj.is_movable:
+                        other_obj.velocity += impulse / other_obj.mass
+                
+                # Debug output
+                if self.debug:
+                    print(f"DEBUG: Collision between objects at {obj.position} and {other_obj.position}")
+    
+    def update_interactive_objects(self, dt, player_position=None, player_direction=None):
+        """Update all interactive objects in the world."""
+        # Use the already stored interactive objects instead of trying to get them from world
+        if not hasattr(self, 'interactive_objects') or self.interactive_objects is None:
+            self.interactive_objects = []
+            return
+        
+        # Update each object's physics
         for obj in self.interactive_objects:
-            # Update object physics
+            # Check if object is below the world (fallen through)
+            if obj.position[1] < -10:
+                # Reset position to above ground
+                obj.position[1] = 5.0
+                obj.velocity = np.array([0.0, 0.0, 0.0])
+                if self.debug:
+                    print(f"DEBUG: Object fell through world, resetting position: {obj.position}")
+                continue
+            
+            # Apply gravity if the object is not on the ground
+            on_ground = False
+            
+            # Check if object is on the ground plane
+            if abs(obj.position[1] - (obj.radius if isinstance(obj, InteractiveSphere) else obj.height/2)) < 0.1:
+                on_ground = True
+                # Stop vertical movement
+                obj.velocity[1] = 0
+            else:
+                # Check for collisions with other objects that might be supporting this object
+                # Use the world from the collision detector
+                for other_obj in self.world.get_objects():
+                    if other_obj is obj:
+                        continue
+                    
+                    # For spheres, check if they're resting on another object
+                    if isinstance(obj, InteractiveSphere):
+                        # Check if sphere is resting on a plane
+                        if isinstance(other_obj, Plane) and other_obj.position[1] == 0:
+                            if abs(obj.position[1] - obj.radius) < 0.1:
+                                on_ground = True
+                                # Ensure sphere doesn't sink into the ground
+                                obj.position[1] = obj.radius
+                                # Stop vertical movement
+                                obj.velocity[1] = 0
+                                break
+                        
+                        # Check if sphere is resting on a cube or rectangle
+                        elif isinstance(other_obj, (Cube, Rectangle)):
+                            # Calculate top of the supporting object
+                            if isinstance(other_obj, Cube):
+                                top_height = other_obj.position[1] + other_obj.height/2
+                            else:  # Rectangle
+                                top_height = other_obj.position[1] + other_obj.height
+                            
+                            # Calculate horizontal distance to object center
+                            horizontal_distance = np.sqrt(
+                                (obj.position[0] - other_obj.position[0])**2 + 
+                                (obj.position[2] - other_obj.position[2])**2
+                            )
+                            
+                            # Check if sphere is above the object horizontally
+                            if isinstance(other_obj, Cube):
+                                half_width = other_obj.width/2
+                                half_depth = other_obj.depth/2
+                                is_above_horizontally = (
+                                    abs(obj.position[0] - other_obj.position[0]) <= half_width + obj.radius and
+                                    abs(obj.position[2] - other_obj.position[2]) <= half_depth + obj.radius
+                                )
+                            else:  # Rectangle
+                                half_width = other_obj.width/2
+                                half_depth = other_obj.depth/2
+                                is_above_horizontally = (
+                                    abs(obj.position[0] - other_obj.position[0]) <= half_width + obj.radius and
+                                    abs(obj.position[2] - other_obj.position[2]) <= half_depth + obj.radius
+                                )
+                            
+                            # Check if sphere is at the right height
+                            if is_above_horizontally and abs(obj.position[1] - obj.radius - top_height) < 0.1:
+                                on_ground = True
+                                # Ensure sphere doesn't sink into the object
+                                obj.position[1] = top_height + obj.radius
+                                # Stop vertical movement
+                                obj.velocity[1] = 0
+                                break
+            
+            if not on_ground:
+                obj.apply_force(np.array([0, -self.gravity * obj.mass, 0]))
+            
+            # Check for collisions with the player
+            if player_position is not None and self._check_player_object_collision(player_position, obj):
+                # Calculate push direction (from player to object)
+                push_dir = obj.position - player_position
+                push_dir[1] = 0  # Only push horizontally
+                
+                # Normalize the direction
+                distance = np.linalg.norm(push_dir)
+                if distance > 0:
+                    push_dir = push_dir / distance
+                else:
+                    # If player is exactly at object center, use player's direction
+                    push_dir = player_direction
+                    push_dir[1] = 0  # Only push horizontally
+                    push_dir = push_dir / np.linalg.norm(push_dir) if np.linalg.norm(push_dir) > 0 else np.array([1, 0, 0])
+                
+                # Apply force to the object (stronger if player is moving toward it)
+                dot_product = np.dot(player_direction, push_dir)
+                force_multiplier = 1.0 + max(0, dot_product)  # More force when moving toward object
+                
+                # Apply the push force
+                push_force = push_dir * self.player_push_strength * force_multiplier
+                obj.apply_force(push_force)
+                
+                if self.debug:
+                    print(f"Pushing object with force: {push_force}, dot product: {dot_product:.2f}")
+            
+            # Update the object's physics
             obj.update(dt)
             
             # Check for collisions with other objects
-            self.handle_object_object_collisions(obj)
-            
-            # Check for collisions with the ground
-            self.handle_object_ground_collision(obj)
+            for other_obj in self.interactive_objects:
+                if obj != other_obj:
+                    self._handle_object_object_collision(obj, other_obj)
     
-    def handle_object_object_collisions(self, obj):
-        """Handle collisions between interactive objects"""
-        for other_obj in self.interactive_objects:
-            if obj is other_obj:
-                continue
-                
-            # Calculate distance between objects
-            distance_vector = np.array(other_obj.position) - np.array(obj.position)
-            distance = np.linalg.norm(distance_vector)
-            
-            # Calculate minimum distance for collision based on object types
-            obj_radius = self._get_object_radius(obj)
-            other_radius = self._get_object_radius(other_obj)
-            min_distance = obj_radius + other_radius
-            
-            # Check for collision
-            if distance < min_distance:
-                # Objects are colliding, resolve collision
-                if distance > 0:
-                    # Calculate collision normal
-                    collision_normal = distance_vector / distance
-                else:
-                    # If objects are at the same position, use a default normal
-                    collision_normal = np.array([1.0, 0.0, 0.0])
-                
-                # Calculate overlap
-                overlap = min_distance - distance
-                
-                # Move objects apart based on their masses
-                total_mass = obj.mass + other_obj.mass
-                if total_mass > 0:
-                    # Move proportionally to mass
-                    if obj.is_movable:
-                        obj.position -= collision_normal * overlap * (other_obj.mass / total_mass)
-                        obj.update_vertices()
-                    
-                    if other_obj.is_movable:
-                        other_obj.position += collision_normal * overlap * (obj.mass / total_mass)
-                        other_obj.update_vertices()
-                
-                # Exchange momentum (simplified elastic collision)
-                if obj.is_movable and other_obj.is_movable:
-                    # Calculate velocity along collision normal
-                    v1 = np.dot(obj.velocity, collision_normal)
-                    v2 = np.dot(other_obj.velocity, collision_normal)
-                    
-                    # Calculate new velocities (conservation of momentum and energy)
-                    new_v1 = ((obj.mass - other_obj.mass) * v1 + 2 * other_obj.mass * v2) / total_mass
-                    new_v2 = ((other_obj.mass - obj.mass) * v2 + 2 * obj.mass * v1) / total_mass
-                    
-                    # Apply new velocities along collision normal
-                    obj.velocity += collision_normal * (new_v1 - v1)
-                    other_obj.velocity += collision_normal * (new_v2 - v2)
-    
-    def _get_object_radius(self, obj):
-        """Get the collision radius of an object based on its type"""
-        from engine.shapes import InteractiveCube, InteractiveTriangle
-        
+    def _check_player_object_collision(self, player_position, obj):
+        """Check if the player is colliding with an interactive object."""
+        # For cubes, check if player is within the cube's bounds plus player radius
         if isinstance(obj, InteractiveCube):
-            # For cubes, use half the maximum of width and depth
-            return max(obj.width, obj.depth) / 2
+            # Calculate the distance from player to cube center
+            distance = np.linalg.norm(player_position - obj.position)
+            
+            # Calculate the maximum distance for collision (half diagonal of cube + player radius)
+            half_diagonal = np.sqrt(obj.width**2 + obj.height**2 + obj.depth**2) / 2
+            max_distance = half_diagonal + self.collision_detector.player_radius
+            
+            return distance < max_distance
+        
+        # For triangles, use a simple radius check (not accurate but simple)
         elif isinstance(obj, InteractiveTriangle):
-            # For triangles, use half the base size
-            return obj.size / 2
-        else:
-            # Default fallback
-            return 0.5
+            # Calculate the distance from player to triangle center
+            distance = np.linalg.norm(player_position - obj.position)
+            
+            # Use the size of the triangle as an approximation
+            max_distance = obj.size + self.collision_detector.player_radius
+            
+            return distance < max_distance
+        
+        # For spheres, check if player is within the sphere's radius plus player radius
+        elif isinstance(obj, InteractiveSphere):
+            # Calculate the distance from player to sphere center
+            distance = np.linalg.norm(player_position - obj.position)
+            
+            # Calculate the maximum distance for collision (sphere radius + player radius)
+            max_distance = obj.radius + self.collision_detector.player_radius
+            
+            return distance < max_distance
+        
+        return False
     
-    def handle_object_ground_collision(self, obj):
-        """Handle collisions between objects and the ground"""
-        from engine.shapes import InteractiveCube, InteractiveTriangle
+    def _handle_object_object_collision(self, obj1, obj2):
+        """Handle collision between two interactive objects."""
+        # Calculate vector between object centers
+        direction = obj2.position - obj1.position
         
-        # Check if object is below ground level
-        if isinstance(obj, InteractiveCube):
-            obj_bottom = obj.position[1] - obj.height / 2
-        elif isinstance(obj, InteractiveTriangle):
-            obj_bottom = obj.position[1]  # Triangle base is at position[1]
-        else:
-            obj_bottom = obj.position[1] - 0.5  # Default fallback
+        # Calculate distance between objects
+        distance = np.linalg.norm(direction)
         
-        if obj_bottom < 0:
-            # Object is below ground, move it up
-            if isinstance(obj, InteractiveCube):
-                obj.position[1] = obj.height / 2
-            elif isinstance(obj, InteractiveTriangle):
-                obj.position[1] = 0  # Set base at ground level
+        # Determine collision threshold based on object types
+        collision_threshold = 0
+        
+        # For cubes, use half the sum of their diagonals
+        if isinstance(obj1, InteractiveCube) and isinstance(obj2, InteractiveCube):
+            diagonal1 = np.sqrt(obj1.width**2 + obj1.height**2 + obj1.depth**2) / 2
+            diagonal2 = np.sqrt(obj2.width**2 + obj2.height**2 + obj2.depth**2) / 2
+            collision_threshold = diagonal1 + diagonal2
+        
+        # For triangles, use their sizes
+        elif isinstance(obj1, InteractiveTriangle) and isinstance(obj2, InteractiveTriangle):
+            collision_threshold = obj1.size + obj2.size
+        
+        # For spheres, use their radii
+        elif isinstance(obj1, InteractiveSphere) and isinstance(obj2, InteractiveSphere):
+            collision_threshold = obj1.radius + obj2.radius
+        
+        # For mixed types, use a combination
+        elif isinstance(obj1, InteractiveCube) and isinstance(obj2, InteractiveTriangle):
+            diagonal1 = np.sqrt(obj1.width**2 + obj1.height**2 + obj1.depth**2) / 2
+            collision_threshold = diagonal1 + obj2.size
+        elif isinstance(obj1, InteractiveTriangle) and isinstance(obj2, InteractiveCube):
+            diagonal2 = np.sqrt(obj2.width**2 + obj2.height**2 + obj2.depth**2) / 2
+            collision_threshold = obj1.size + diagonal2
+        elif isinstance(obj1, InteractiveCube) and isinstance(obj2, InteractiveSphere):
+            diagonal1 = np.sqrt(obj1.width**2 + obj1.height**2 + obj1.depth**2) / 2
+            collision_threshold = diagonal1 + obj2.radius
+        elif isinstance(obj1, InteractiveSphere) and isinstance(obj2, InteractiveCube):
+            diagonal2 = np.sqrt(obj2.width**2 + obj2.height**2 + obj2.depth**2) / 2
+            collision_threshold = obj1.radius + diagonal2
+        elif isinstance(obj1, InteractiveTriangle) and isinstance(obj2, InteractiveSphere):
+            collision_threshold = obj1.size + obj2.radius
+        elif isinstance(obj1, InteractiveSphere) and isinstance(obj2, InteractiveTriangle):
+            collision_threshold = obj1.radius + obj2.size
+        
+        # Check if objects are colliding
+        if distance < collision_threshold:
+            # Normalize direction
+            if distance > 0:
+                direction = direction / distance
             else:
-                obj.position[1] = 0.5  # Default fallback
+                # If objects are at the same position, use a default direction
+                direction = np.array([1, 0, 0])
+            
+            # Calculate overlap
+            overlap = collision_threshold - distance
+            
+            # Calculate impulse based on masses and velocities
+            relative_velocity = obj2.velocity - obj1.velocity
+            velocity_along_normal = np.dot(relative_velocity, direction)
+            
+            # Only resolve if objects are moving toward each other
+            if velocity_along_normal < 0:
+                # Calculate impulse scalar
+                restitution = 0.8  # Bounciness factor (0-1)
+                impulse_scalar = -(1 + restitution) * velocity_along_normal
+                impulse_scalar /= (1 / obj1.mass) + (1 / obj2.mass)
                 
-            obj.update_vertices()
-            
-            # Stop vertical movement and apply friction to horizontal movement
-            obj.velocity[1] = 0
-            
-            # Apply ground friction to horizontal velocity
-            ground_friction = 0.5  # Higher friction on ground
-            horizontal_velocity = np.array([obj.velocity[0], 0, obj.velocity[2]])
-            
-            if np.linalg.norm(horizontal_velocity) > 0:
-                friction_force = -ground_friction * horizontal_velocity
-                obj.velocity[0] += friction_force[0]
-                obj.velocity[2] += friction_force[2]
+                # Apply impulse
+                impulse = direction * impulse_scalar
                 
-                # Stop if moving very slowly
-                if np.linalg.norm(horizontal_velocity) < 0.05:
-                    obj.velocity[0] = 0
-                    obj.velocity[2] = 0 
+                # Update velocities
+                if obj1.is_movable:
+                    obj1.velocity -= (impulse / obj1.mass)
+                if obj2.is_movable:
+                    obj2.velocity += (impulse / obj2.mass)
+                
+                # Separate objects to prevent sticking
+                if obj1.is_movable and obj2.is_movable:
+                    # Move both objects
+                    separation = direction * overlap * 0.5
+                    obj1.position -= separation
+                    obj2.position += separation
+                elif obj1.is_movable:
+                    # Only move obj1
+                    obj1.position -= direction * overlap
+                elif obj2.is_movable:
+                    # Only move obj2
+                    obj2.position += direction * overlap 

@@ -78,9 +78,22 @@ def main():
                     # Toggle shadows
                     shadows_on = renderer.toggle_shadows()
                     print(f"Shadows: {'ON' if shadows_on else 'OFF'}")
+                elif event.key == pygame.K_h:
+                    # Toggle HUD display
+                    hud_on = renderer.toggle_hud()
+                    print(f"HUD: {'ON' if hud_on else 'OFF'}")
+                elif event.key == pygame.K_r:
+                    # Reset interactive objects
+                    for obj in interactive_objects:
+                        obj.velocity = np.array([0.0, 0.0, 0.0])
+                        obj.force = np.array([0.0, 0.0, 0.0])
+                    print("Reset interactive objects")
         
         # Update camera (handles input and movement)
         camera.update()
+        
+        # Update interactive objects physics
+        physics_engine.update_interactive_objects(dt, camera.position, camera.get_direction())
         
         # Update renderer (for animated lighting)
         renderer.update(dt)
@@ -91,6 +104,11 @@ def main():
             last_debug_time = current_time
             print(f"Camera position: {camera.position}")
             print(f"FPS: {clock.get_fps():.1f}")
+            
+            # Print interactive objects info if any are moving
+            for obj in interactive_objects:
+                if np.linalg.norm(obj.velocity) > 0.01:
+                    print(f"Object at {obj.position} moving with velocity {obj.velocity}")
         
         # Clear the screen and depth buffer
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)

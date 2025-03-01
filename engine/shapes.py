@@ -343,3 +343,82 @@ class InteractiveTriangle(Triangle):
         
         # Reset force for next frame
         self.force = np.array([0.0, 0.0, 0.0]) 
+
+class Sphere(Shape):
+    def __init__(self, position=None, radius=1.0, color=None, resolution=16):
+        super().__init__(position)
+        self.radius = radius
+        self.resolution = resolution  # Controls the detail of the sphere
+        
+        # Default color (white)
+        if color is None:
+            color = [1.0, 1.0, 1.0]
+        
+        # For a sphere, we'll store the color but not pre-compute vertices
+        # The vertices will be generated during rendering using gluSphere
+        self.color = color
+        
+        # Store a single color for the entire sphere
+        self.colors = [color]
+    
+    def get_bounding_box(self):
+        """Return the bounding box of the sphere as (min_x, min_y, min_z, max_x, max_y, max_z)"""
+        return (
+            self.position[0] - self.radius,
+            self.position[1] - self.radius,
+            self.position[2] - self.radius,
+            self.position[0] + self.radius,
+            self.position[1] + self.radius,
+            self.position[2] + self.radius
+        )
+
+class InteractiveSphere(Sphere):
+    def __init__(self, position=None, radius=1.0, color=None, resolution=16, mass=10.0, friction=0.3, is_movable=True):
+        super().__init__(position, radius, color, resolution)
+        
+        # Physics properties
+        self.mass = mass  # Mass in kg
+        self.friction = friction  # Friction coefficient (0-1)
+        self.is_movable = is_movable  # Whether the object can be moved
+        
+        # Dynamic properties
+        self.velocity = np.array([0.0, 0.0, 0.0])  # Current velocity vector
+        self.acceleration = np.array([0.0, 0.0, 0.0])  # Current acceleration vector
+        self.force = np.array([0.0, 0.0, 0.0])  # Current force applied
+        
+        # Set a slightly different color to distinguish interactive objects
+        if color is None:
+            # Default to a light purple for interactive spheres
+            self.color = [0.7, 0.3, 0.9]
+            self.colors = [[0.7, 0.3, 0.9]]
+    
+    def apply_force(self, force_vector):
+        """Apply a force to the object"""
+        if self.is_movable:
+            self.force += np.array(force_vector)
+    
+    def update(self, dt):
+        """Update the object's physics state"""
+        if not self.is_movable:
+            return
+        
+        # Calculate acceleration (F = ma, so a = F/m)
+        self.acceleration = self.force / self.mass
+        
+        # Update velocity (v = v0 + at)
+        self.velocity += self.acceleration * dt
+        
+        # Apply friction to slow down the object
+        if np.linalg.norm(self.velocity) > 0:
+            friction_force = -self.friction * self.velocity
+            self.velocity += friction_force * dt
+            
+            # Stop the object if it's moving very slowly
+            if np.linalg.norm(self.velocity) < 0.01:
+                self.velocity = np.array([0.0, 0.0, 0.0])
+        
+        # Update position (p = p0 + vt)
+        self.position += self.velocity * dt
+        
+        # Reset force for next frame
+        self.force = np.array([0.0, 0.0, 0.0])

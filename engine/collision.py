@@ -1,5 +1,5 @@
 import numpy as np
-from engine.shapes import Cube, Plane, Rectangle, Triangle, InteractiveTriangle, InteractiveCube
+from engine.shapes import Cube, Plane, Rectangle, Triangle, InteractiveTriangle, InteractiveCube, Sphere, InteractiveSphere
 import time
 
 class CollisionDetector:
@@ -71,6 +71,22 @@ class CollisionDetector:
                         if self.debug and time.time() - self.last_debug_time > 1.0:
                             self.last_debug_time = time.time()
                             print(f"Standing on triangle at position {adjusted_position}, object height: {self._standing_height}")
+            elif isinstance(obj, (Sphere, InteractiveSphere)):
+                if self._check_sphere_collision(obj, position, adjusted_position):
+                    # Collision detected, adjust position
+                    adjusted_position = self._resolve_sphere_collision(obj, position, adjusted_position)
+                    
+                    # If we adjusted the Y position upward, we might be standing on this object
+                    if adjusted_position[1] > new_position[1]:
+                        self._standing_on_object = obj
+                        self._on_ground_last_check = True
+                        
+                        # Store the height of the object we're standing on
+                        self._standing_height = obj.position[1] + obj.radius
+                        
+                        if self.debug and time.time() - self.last_debug_time > 1.0:
+                            self.last_debug_time = time.time()
+                            print(f"Standing on sphere at position {adjusted_position}, object height: {self._standing_height}")
             elif isinstance(obj, Plane):
                 # For planes, we only check if we're trying to go below the ground
                 if obj.position[1] == 0 and adjusted_position[1] < self.player_height:
@@ -398,6 +414,23 @@ class CollisionDetector:
                     
                     self._on_ground_last_check = True
                     return True
+            elif isinstance(obj, Sphere):
+                # Check if we're standing on top of the sphere
+                if self._check_standing_on_sphere(obj, position):
+                    # Store the object we're standing on
+                    self._standing_on_object = obj
+                    
+                    # Store the height of the object (top of sphere)
+                    self._standing_height = obj.position[1] + obj.radius
+                    
+                    # Only print debug message occasionally to reduce spam
+                    current_time = time.time()
+                    if self.debug and current_time - self.last_debug_time > 1.0 and not self._on_ground_last_check:
+                        self.last_debug_time = current_time
+                        print(f"Ground check: Standing on sphere at height {self._standing_height}")
+                    
+                    self._on_ground_last_check = True
+                    return True
         
         # If we reach here, we're not on the ground
         if self.debug and time.time() - self.last_debug_time > 1.0 and self._on_ground_last_check:
@@ -444,6 +477,30 @@ class CollisionDetector:
                 # Use a larger threshold for standing detection to prevent falling through
                 if abs(player_feet - top_height) < self.ground_collision_threshold * 4:
                     return True
+        
+        return False
+    
+    def _check_standing_on_sphere(self, sphere, position):
+        """Check if the player is standing on top of a sphere."""
+        # Calculate player's feet position
+        player_feet = position[1] - self.player_height
+        
+        # Calculate horizontal distance to sphere center
+        horizontal_distance = np.sqrt(
+            (position[0] - sphere.position[0])**2 + 
+            (position[2] - sphere.position[2])**2
+        )
+        
+        # Check if player is above the sphere horizontally
+        # Player must be within the sphere's radius plus player radius horizontally
+        if horizontal_distance <= sphere.radius + self.player_radius:
+            # Calculate the top height of the sphere
+            sphere_top = sphere.position[1] + sphere.radius
+            
+            # Check if player's feet are at the right height
+            # Use a larger threshold for standing detection to prevent falling through
+            if abs(player_feet - sphere_top) < self.ground_collision_threshold * 4:
+                return True
         
         return False
     
@@ -574,4 +631,63 @@ class CollisionDetector:
                 adjusted_position[0] = triangle.position[0] + direction[0] * (base_half_size + self.player_radius + 0.1)
                 adjusted_position[2] = triangle.position[2] + direction[2] * (base_half_size + self.player_radius + 0.1)
             
-        return adjusted_position 
+        return adjusted_position
+    
+    def _check_sphere_collision(self, sphere, position, new_position):
+        """Check if the player collides with a sphere."""
+        # Calculate the vector from the sphere center to the player
+        sphere_to_player = new_position - sphere.position
+        
+        # Calculate the distance from the sphere center to the player
+        distance = np.linalg.norm(sphere_to_player)
+        
+        # If the distance is less than the sum of the sphere radius and player radius,
+        # then there is a collision
+        collision_distance = sphere.radius + self.player_radius
+        
+        # Check if we're colliding with the sphere
+        return distance < collision_distance
+    
+    def _resolve_sphere_collision(self, sphere, position, new_position):
+        """Resolve collision with a sphere by pushing the player away."""
+        # Calculate the vector from the sphere center to the player
+        sphere_to_player = new_position - sphere.position
+        
+        # Calculate the distance from the sphere center to the player
+        distance = np.linalg.norm(sphere_to_player)
+        
+        # If the distance is zero (player at exact center of sphere), move in a default direction
+        if distance < 0.001:
+            sphere_to_player = np.array([1.0, 0.0, 0.0])  # Default direction
+            distance = 0.001
+        
+        # Calculate the minimum distance needed to avoid collision
+        collision_distance = sphere.radius + self.player_radius
+        
+        # Only resolve if there's an actual collision
+        if distance < collision_distance:
+            # Normalize the direction vector
+            direction = sphere_to_player / distance
+            
+            # Calculate how far to push the player
+            push_distance = collision_distance - distance
+            
+            # Create the push vector
+            push_vector = direction * push_distance
+            
+            # Apply the push vector to the position
+            adjusted_position = new_position + push_vector
+            
+            # If the player is above the sphere, they might be standing on it
+            if new_position[1] > sphere.position[1] and abs(new_position[0] - sphere.position[0]) < sphere.radius and abs(new_position[2] - sphere.position[2]) < sphere.radius:
+                # Set the player's height to be on top of the sphere
+                adjusted_position[1] = sphere.position[1] + sphere.radius + self.player_height - 1.7
+                
+                if self.debug and time.time() - self.last_debug_time > 1.0:
+                    self.last_debug_time = time.time()
+                    print(f"Standing on top of sphere at height {adjusted_position[1]}")
+            
+            return adjusted_position
+        
+        # No collision, return the original position
+        return new_position 
